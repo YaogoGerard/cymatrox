@@ -1,0 +1,22 @@
+[package]
+name = "cymatrox"
+version = "0.1.0"
+edition = "2024"
+description = "GPU-accelerated scientific toolkit for cymatics simulation — solid, liquid, and gas"
+repository = "https://github.com/YaogoGerard/cymatrox"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["gpu", "simulation", "physics", "cymatics", "wgpu"]
+categories = ["science", "graphics"]
+
+[dependencies]
+thiserror = "2.0.20"
+wgpu = "30.0.1"
+bytemuck = { version = "1.23.2", features = ["derive"] }
+
+[features]
+## Compile-in the f64 CPU reference implementations (test-only oracle, ADR-0004).
+reference = []
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["full"] }

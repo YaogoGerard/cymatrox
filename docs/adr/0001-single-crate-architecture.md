@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 
+> **In plain terms:** ship one package containing all three physics modules rather than three separate packages — fewer moving parts for a solo maintainer.
+
 ## Context
 
 Cymatrox has three physics domains (granular, fluid, acoustic). A common pattern in the Rust ecosystem is to split each into its own crate (e.g. `cymatrox-granular`, `cymatrox-fluid`, `cymatrox-acoustic`) behind a facade, or leave them fully independent.

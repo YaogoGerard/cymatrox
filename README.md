@@ -2,52 +2,104 @@
 
 > GPU-accelerated scientific toolkit for cymatics simulation — solid, liquid, and gas — written in Rust.
 
-[![Crates.io](https://img.shields.io/crates/v/cymatrox.svg)](https://crates.io/crates/cymatrox)
-[![docs.rs](https://img.shields.io/docsrs/cymatrox)](https://docs.rs/cymatrox)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/YaogoGerard/cymatrox/ci.yml)](https://github.com/YaogoGerard/cymatrox/actions)
+> **Status:** design stage — documentation and architecture only, no implementation yet. Nothing is published to crates.io; the API described here is a target and may change.
 
-> **Status:** pre-release, not yet published to crates.io. API may change.
+## What is cymatics?
+
+**Cymatics** is the study of *visible* sound — the study of what happens when matter vibrates at specific frequencies:
+
+- sprinkle sand on a metal plate, vibrate it, and the sand snaps into geometric figures;
+- shake a dish of liquid vertically at the right rhythm and regular ripples appear on its surface;
+- aim sound waves carefully enough and small droplets can float in mid-air.
+
+Each phenomenon is a window into physics, and each takes serious number-crunching to simulate on a computer. That is exactly what Cymatrox computes — on your GPU.
+
+New around here? Every technical term is defined in plain language in the [glossary](./docs/GLOSSARY.md).
 
 ## Why Cymatrox
 
-Cymatics — the study of visible sound and vibration — is a well-established field, but no Rust crate exists to run cymatics experiments or build simulators from a computer. Cymatrox fills that gap as a **headless, physics-first library**: it computes, you visualize (in whatever engine or tool you prefer).
+Cymatics is a well-established field, but no Rust crate exists to run cymatics experiments or build simulators from a computer. Cymatrox fills that gap as a **headless, physics-first library**: it computes, you visualize (in whatever engine or tool you prefer).
+
+## The big picture
+
+```mermaid
+flowchart LR
+    IN["Sound input<br>(microphone or audio file)"] --> LIB
+
+    subgraph LIB["cymatrox — pure computation, no UI"]
+        CTX["GpuContext<br>one GPU device + queue,<br>created once"] --> G["granular<br>solids · Chladni plates"]
+        CTX --> F["fluid<br>liquid surfaces"]
+        CTX --> ACO["acoustic<br>sound fields in gases"]
+    end
+
+    G --> OUT
+    F --> OUT
+    ACO --> OUT
+    OUT["Plain data out<br>positions · heights · pressures"] --> TOOLS["Your tools<br>Bevy · Python · MATLAB · R…"]
+```
 
 ## Features
 
-Cymatrox ships three independent physics modules, all running on the GPU via [wgpu](https://github.com/gfx-rs/wgpu):
+Cymatrox will ship three independent physics modules, all running on the GPU via [wgpu](https://github.com/gfx-rs/wgpu):
 
-| Module | Domain | Physics | Output |
-|---|---|---|---|
-| **Granular** | Solid (Chladni plates) | Sophie Germain plate equation + Newtonian particle kinetics | `Vec<GranularData>` (position + velocity per grain) |
-| **Fluid** | Liquid surface (CymaScope) | Mathieu equation (Faraday instability) + incompressible Navier-Stokes + Laplace-Young surface tension | `Vec<FluidSurfaceNode>` (height + vertical velocity per mesh point) |
-| **Acoustic** | Gas (acoustic levitation) | Helmholtz equation + Gor'kov force potential | `Vec<AcousticPressureNode>` (pressure in Pa + force vector) |
+| Module | Domain | Simply put | Physics | Output |
+|---|---|---|---|---|
+| **Granular** | Solid (Chladni plates) | Sand settling into geometric patterns on a vibrating plate | Sophie Germain plate equation + Newtonian particle kinetics | `Vec<GranularData>` (position + velocity per grain) |
+| **Fluid** | Liquid surface (CymaScope) | Regular ripples forming on a liquid shaken at the right frequency | Damped wave equation with Mathieu (Faraday) parametric forcing + Laplace-Young surface tension ([ADR-0011](./docs/adr/0011-fluid-model.md)) | `Vec<FluidSurfaceNode>` (height + vertical velocity per mesh point) |
+| **Acoustic** | Gas (acoustic levitation) | Standing sound waves strong enough to hold small objects in mid-air | Helmholtz equation + Gor'kov force potential | `Vec<AcousticPressureNode>` (pressure in Pa + force vector) |
 
 - Pure computation, no UI — export results as CSV, JSON, or binary for use in MATLAB, Python/NumPy, R, or a rendering engine like Bevy.
 - Shared `GpuContext` across modules — no redundant device/queue setup.
 - Optional audio-driven input (microphone or file) via `cpal` + FFT.
+- Correctness you can trust: every GPU result is validated against a slower, double-precision CPU reference ([ADR-0004](./docs/adr/0004-numerical-precision-strategy.md)).
 
 ## Installation
 
-Not yet on crates.io. Until the first release, depend on the Git repository:
-
-```toml
-[dependencies]
-cymatrox = { git = "https://github.com/YaogoGerard/cymatrox" }
+```sh
+cargo add cymatrox
 ```
 
-## Quickstart
+Requires a GPU-capable host (Vulkan, Metal, or DX12); there is no CPU fallback by design ([ADR-0008](./docs/adr/0008-gpu-only-no-cpu-fallback.md)).
+
+## Usage
+
+Only `GpuContext::new()` is async (adapter request) — every `step()` is a deliberate blocking call that returns the post-step state ([ADR-0006](./docs/adr/0006-gpu-cpu-readback-strategy.md)):
 
 ```rust
-use cymatrox::{GpuContext, granular::GranularSimulation};
+use cymatrox::{GpuContext, granular::{
+    Driving, GrainBed, GranularConfig, GranularSimulation,
+    InitialDistribution, ModeSelection, PlateSpec, SolverParams,
+}};
 
 #[tokio::main]
 async fn main() -> Result<(), cymatrox::Error> {
     let ctx = GpuContext::new().await?;
-    let mut sim = GranularSimulation::new(&ctx, /* config */)?;
+
+    let config = GranularConfig {
+        experiment: Driving {
+            frequency_hz: 440.0,
+            amplitude: 1e-4,
+            modes: ModeSelection::Auto,
+        },
+        medium: PlateSpec::Idealized { side: 0.5 },
+        grains: GrainBed {
+            count: 100_000,
+            distribution: InitialDistribution::Uniform,
+            seed: 42,
+        },
+        solver: SolverParams {
+            dt: 1.0 / 480.0,
+            drag: 4.0,
+            restitution: 0.6,
+            coupling_k: 5.0e5,
+            base_frequency_hz: 120.0,
+        },
+    };
+
+    let mut sim = GranularSimulation::new(&ctx, config)?;
 
     sim.set_frequency(432.0);
-    let frame: Vec<_> = sim.step()?;
+    let frame = sim.step()?;
 
     // export, plot, or feed into your own renderer
     println!("{} grains simulated", frame.len());
@@ -55,11 +107,22 @@ async fn main() -> Result<(), cymatrox::Error> {
 }
 ```
 
-See [`examples/`](./examples) for full runnable programs per module.
+Runnable end-to-end examples live in [`examples/`](./examples/) — one per module:
 
-## Architecture
+```sh
+cargo run --example granular_chladni   # solids on Chladni plates
+cargo run --example fluid_ripples      # Faraday waves on a liquid surface
+cargo run --example acoustic_trap      # Gor'kov forces on a droplet
+```
 
-See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the data flow, module boundaries, and shared `GpuContext` design. Design decisions are recorded as ADRs in [`docs/adr/`](./docs/adr).
+## Documentation
+
+| Document | What's inside |
+|---|---|
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the crate fits together, with diagrams |
+| [`docs/GLOSSARY.md`](./docs/GLOSSARY.md) | Every physics and GPU term in plain language |
+| [`docs/CONTRACT.md`](./docs/CONTRACT.md) | The promises each module makes: preconditions, tolerances, failure modes |
+| [`docs/adr/`](./docs/adr/) | Design decisions (ADRs) — what was decided and why |
 
 ## Performance targets
 
@@ -71,10 +134,11 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the data flow, module b
 
 ## Roadmap
 
+- [x] Design — architecture docs, ADRs, contract & invariants
 - [x] Phase 0 — Foundations (`GpuContext`, error types, build pipeline)
-- [ ] Phase 1 — Granular module
-- [ ] Phase 2 — Fluid module
-- [ ] Phase 3 — Acoustic module
+- [x] Phase 1 — Granular module
+- [x] Phase 2 — Fluid module
+- [x] Phase 3 — Acoustic module
 - [ ] Phase 4 — Integration, polish, `v0.1.0` release
 
 ## Contributing
@@ -83,4 +147,4 @@ Contributions are welcome — see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for set
 
 ## License
 
-Dual-licensed under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE), at your option.
+Dual-licensed under [`MIT`](./LICENSE-MIT) or [`Apache-2.0`](./LICENSE-APACHE), at your option — the same convention as the Rust ecosystem itself (and `wgpu`). Correspondingly `SPDX-License-Identifier: MIT OR Apache-2.0`.

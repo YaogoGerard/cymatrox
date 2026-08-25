@@ -1,0 +1,50 @@
+//! Deterministic pseudo-random number generation shared by all modules.
+//!
+//! SplitMix64: tiny, dependency-free, and bit-stable across platforms —
+//! the reproducibility requirement (contract O4 in every module section)
+//! rules out any system-entropy-backed RNG.
+
+/// Deterministic RNG seeded from each module's config `seed` field.
+pub(crate) struct Rng(u64);
+
+impl Rng {
+    pub(crate) fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 28)
+    }
+
+    /// Uniform in `[0, 1)` at f64 precision.
+    pub(crate) fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_across_instances() {
+        let mut a = Rng::new(42);
+        let mut b = Rng::new(42);
+        for _ in 0..16 {
+            assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn unit_range_respected() {
+        let mut r = Rng::new(7);
+        for _ in 0..10_000 {
+            let v = r.next_f64();
+            assert!((0.0..1.0).contains(&v));
+        }
+    }
+}

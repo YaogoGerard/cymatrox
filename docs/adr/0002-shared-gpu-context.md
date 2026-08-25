@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 
+> **In plain terms:** all simulations share a single connection to the GPU — created once and passed around — instead of each opening its own.
+
 ## Context
 
 Each module (granular, fluid, acoustic) needs a `wgpu::Device` and `wgpu::Queue` to run compute shaders. These could be created once per module, or shared.

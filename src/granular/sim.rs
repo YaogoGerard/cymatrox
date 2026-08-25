@@ -249,6 +249,62 @@ impl GranularSimulation {
         Ok(out)
     }
 
+    /// Non-blocking variant of [`step`](Self::step) for WASM and async contexts.
+    ///
+    /// Same GPU pipeline as `step()` but uses `futures_channel::oneshot` for
+    /// the mapping callback, and skips `device.poll(Wait)` on WASM where the
+    /// browser's event loop drives completion.
+    #[cfg(feature = "web")]
+    pub async fn step_async(&mut self) -> Result<Vec<GranularData>> {
+        let entries = mode_entries(self.config.resolve_modes());
+        self.queue
+            .write_buffer(&self.modes_buf, 0, cast_slice(&entries));
+
+        let s = self.config.solver;
+        let params = GpuParams {
+            plate_size: self.side,
+            frequency_hz: self.config.experiment.frequency_hz,
+            amplitude: self.config.experiment.amplitude,
+            dt: s.dt,
+            drag: s.drag,
+            restitution: s.restitution,
+            coupling_k: s.coupling_k,
+            time: self.time,
+        };
+        self.queue
+            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        let byte_len = self.count as u64 * std::mem::size_of::<GranularData>() as u64;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cymatrox.granular.step_async"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("cymatrox.granular.pass_async"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.dispatch_workgroups(self.count.div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&self.grains_buf, 0, &self.staging_buf, 0, byte_len);
+        self.queue.submit(Some(encoder.finish()));
+
+        let out = crate::core::readback::read_back_async::<GranularData>(
+            &self.staging_buf,
+            byte_len,
+            &self.device,
+        )
+        .await?;
+
+        self.time += s.dt;
+        debug_assert_eq!(out.len(), self.count as usize);
+        Ok(out)
+    }
+
     /// ADR-0006 readback: map the staging buffer after a blocking poll,
     /// copy the bytes into a `Vec<GranularData>`, unmap.
     fn read_back(&self, byte_len: u64) -> Result<Vec<GranularData>> {
@@ -383,5 +439,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// step_async() must return bit-identical results to step().
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    #[ignore = "requires a GPU-capable host (or software backend)"]
+    async fn step_async_matches_step() {
+        let cfg = reference_config(42);
+        let ctx = crate::GpuContext::new().await.expect("gpu context");
+
+        let mut sim_sync = GranularSimulation::new(&ctx, cfg.clone()).expect("sync sim");
+        let mut sim_async = GranularSimulation::new(&ctx, cfg).expect("async sim");
+
+        let frame_sync = sim_sync.step().expect("step sync");
+        let frame_async = sim_async.step_async().await.expect("step async");
+        assert_eq!(frame_sync, frame_async);
     }
 }

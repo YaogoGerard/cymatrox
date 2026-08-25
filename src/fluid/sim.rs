@@ -256,6 +256,50 @@ impl FluidSimulation {
         Ok(frame)
     }
 
+    /// Non-blocking variant of [`step`](Self::step) for WASM and async contexts.
+    #[cfg(feature = "web")]
+    pub async fn step_async(&mut self) -> Result<Vec<FluidSurfaceNode>> {
+        self.queue.write_buffer(
+            &self.params_buf,
+            0,
+            bytemuck::bytes_of(&self.build_params()),
+        );
+
+        let byte_len = self.out_count as u64 * std::mem::size_of::<FluidSurfaceNode>() as u64;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cymatrox.fluid.step_async"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("cymatrox.fluid.pass_async"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_groups[self.current], &[]);
+            pass.dispatch_workgroups(
+                self.config.surface.width.div_ceil(WORKGROUP),
+                self.config.surface.height.div_ceil(WORKGROUP),
+                1,
+            );
+        }
+        encoder.copy_buffer_to_buffer(&self.out_buf, 0, &self.staging_buf, 0, byte_len);
+        self.queue.submit(Some(encoder.finish()));
+
+        let frame = crate::core::readback::read_back_async::<FluidSurfaceNode>(
+            &self.staging_buf,
+            byte_len,
+            &self.device,
+        )
+        .await?;
+
+        self.current ^= 1;
+        self.time += self.config.solver.dt;
+        Ok(frame)
+    }
+
     fn build_params(&self) -> GpuParams {
         let g = &self.config.surface;
         let l = &self.config.liquid;
@@ -410,4 +454,20 @@ mod tests {
     /// Frozen after the first drift measurement landed on real hardware
     /// (docs/CONTRACT.md § Fluid, golden-file tolerance).
     const GOLDEN_TOLERANCE_M: f64 = 1.0e-11;
+
+    /// step_async() must return bit-identical results to step().
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    #[ignore = "requires a GPU-capable host (or software backend)"]
+    async fn step_async_matches_step() {
+        let cfg = reference_config(42);
+        let ctx = crate::GpuContext::new().await.expect("gpu context");
+
+        let mut sim_sync = FluidSimulation::new(&ctx, cfg.clone()).expect("sync sim");
+        let mut sim_async = FluidSimulation::new(&ctx, cfg).expect("async sim");
+
+        let frame_sync = sim_sync.step().expect("step sync");
+        let frame_async = sim_async.step_async().await.expect("step async");
+        assert_eq!(frame_sync, frame_async);
+    }
 }

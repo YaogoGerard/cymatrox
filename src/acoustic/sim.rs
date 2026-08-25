@@ -252,6 +252,57 @@ impl AcousticSimulation {
         Ok(frame)
     }
 
+    /// Non-blocking variant of [`step`](Self::step) for WASM and async contexts.
+    #[cfg(feature = "web")]
+    pub async fn step_async(&mut self) -> Result<Vec<AcousticPressureNode>> {
+        self.queue.write_buffer(
+            &self.params_buf,
+            0,
+            bytemuck::bytes_of(&self.build_params()),
+        );
+
+        let byte_len = self.out_count as u64 * std::mem::size_of::<AcousticPressureNode>() as u64;
+        let v = self.config.volume;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cymatrox.acoustic.step_async"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("cymatrox.acoustic.pass_async"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, &self.bind_groups[self.current], &[]);
+            pass.set_pipeline(&self.wave_pipeline);
+            pass.dispatch_workgroups(
+                v.width.div_ceil(WORKGROUP),
+                v.height.div_ceil(WORKGROUP),
+                v.depth.div_ceil(WORKGROUP),
+            );
+            pass.set_pipeline(&self.gorkov_pipeline);
+            pass.dispatch_workgroups(
+                v.width.div_ceil(WORKGROUP),
+                v.height.div_ceil(WORKGROUP),
+                v.depth.div_ceil(WORKGROUP),
+            );
+        }
+        encoder.copy_buffer_to_buffer(&self.out_buf, 0, &self.staging_buf, 0, byte_len);
+        self.queue.submit(Some(encoder.finish()));
+
+        let frame = crate::core::readback::read_back_async::<AcousticPressureNode>(
+            &self.staging_buf,
+            byte_len,
+            &self.device,
+        )
+        .await?;
+
+        self.current ^= 1;
+        self.time += self.config.solver.dt;
+        Ok(frame)
+    }
+
     fn build_params(&self) -> GpuParams {
         let v = &self.config.volume;
         let m = &self.config.medium;
@@ -472,4 +523,20 @@ mod tests {
     /// accumulation). Frozen two orders above with margin
     /// (docs/CONTRACT.md § Acoustic).
     const GOLDEN_TOLERANCE_PA: f64 = 0.25;
+
+    /// step_async() must return bit-identical results to step().
+    #[cfg(feature = "web")]
+    #[tokio::test]
+    #[ignore = "requires a GPU-capable host (or software backend)"]
+    async fn step_async_matches_step() {
+        let cfg = reference_config(42);
+        let ctx = crate::GpuContext::new().await.expect("gpu context");
+
+        let mut sim_sync = AcousticSimulation::new(&ctx, cfg.clone()).expect("sync sim");
+        let mut sim_async = AcousticSimulation::new(&ctx, cfg).expect("async sim");
+
+        let frame_sync = sim_sync.step().expect("step sync");
+        let frame_async = sim_async.step_async().await.expect("step async");
+        assert_eq!(frame_sync, frame_async);
+    }
 }

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Headless runners have no hardware GPU; Lavapipe (Mesa software Vulkan)
+  # runs the real WGSL shaders per ADR-0007.
+  WGPU_BACKEND: vulkan
+
+jobs:
+  test:
+    name: Build, lint & golden-file tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Mesa Lavapipe (software Vulkan driver)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Tests (config validation, pact checks, determinism setup)
+        run: cargo test
+
+      - name: Golden-file tests on Lavapipe (ADR-0007)
+        run: cargo test -- --ignored

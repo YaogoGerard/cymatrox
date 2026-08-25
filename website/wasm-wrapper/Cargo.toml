@@ -1,0 +1,19 @@
+[package]
+name = "cymatrox-web"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The real, published crate — this wrapper adds no physics of its own,
+# it only exposes cymatrox's existing API to JavaScript.
+cymatrox = "0.1.0"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "s"

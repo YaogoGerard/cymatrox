@@ -2,7 +2,7 @@
 
 > GPU-accelerated scientific toolkit for cymatics simulation — solid, liquid, and gas — written in Rust.
 
-> **Status:** design stage — documentation and architecture only, no implementation yet. Nothing is published to crates.io; the API described here is a target and may change.
+> **Status:** `v0.1.0` published on [crates.io](https://crates.io/crates/cymatrox) — granular, fluid and acoustic modules are implemented and GPU-validated. Deferred features live in the contract open points (v1.1+).
 
 ## What is cymatics?
 
@@ -139,7 +139,7 @@ cargo run --example acoustic_trap      # Gor'kov forces on a droplet
 - [x] Phase 1 — Granular module
 - [x] Phase 2 — Fluid module
 - [x] Phase 3 — Acoustic module
-- [ ] Phase 4 — Integration, polish, `v0.1.0` release
+- [x] Phase 4 — Integration, polish, `v0.1.0` release
 
 ## Contributing
 

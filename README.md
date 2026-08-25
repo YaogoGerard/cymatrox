@@ -2,7 +2,7 @@
 
 > GPU-accelerated scientific toolkit for cymatics simulation — solid, liquid, and gas — written in Rust.
 
-> **Status:** `v0.1.0` published on [crates.io](https://crates.io/crates/cymatrox) — granular, fluid and acoustic modules are implemented and GPU-validated. Deferred features live in the contract open points (v1.1+).
+> **Status:** `v0.2.0` published on [crates.io](https://crates.io/crates/cymatrox) — granular, fluid and acoustic modules are implemented and GPU-validated. `step_async()` enables non-blocking readback for WASM (WebGPU) targets.
 
 ## What is cymatics?
 
@@ -40,7 +40,7 @@ flowchart LR
 
 ## Features
 
-Cymatrox will ship three independent physics modules, all running on the GPU via [wgpu](https://github.com/gfx-rs/wgpu):
+Cymatrox ships three independent physics modules, all running on the GPU via [wgpu](https://github.com/gfx-rs/wgpu):
 
 | Module | Domain | Simply put | Physics | Output |
 |---|---|---|---|---|
@@ -50,7 +50,7 @@ Cymatrox will ship three independent physics modules, all running on the GPU via
 
 - Pure computation, no UI — export results as CSV, JSON, or binary for use in MATLAB, Python/NumPy, R, or a rendering engine like Bevy.
 - Shared `GpuContext` across modules — no redundant device/queue setup.
-- Optional audio-driven input (microphone or file) via `cpal` + FFT.
+- `step_async()` for non-blocking GPU readback — enables WASM targets via WebGPU ([ADR-0006](./docs/adr/0006-gpu-cpu-readback-strategy.md)).
 - Correctness you can trust: every GPU result is validated against a slower, double-precision CPU reference ([ADR-0004](./docs/adr/0004-numerical-precision-strategy.md)).
 
 ## Installation
@@ -107,6 +107,19 @@ async fn main() -> Result<(), cymatrox::Error> {
 }
 ```
 
+### Non-blocking readback (WASM)
+
+Enable the `web` feature to use `step_async()` — it dispatches GPU work synchronously and returns a future that resolves when the readback buffer is ready. This is required for WASM targets where `device.poll()` is a no-op:
+
+```toml
+[dependencies]
+cymatrox = { version = "0.2", features = ["web"] }
+```
+
+```rust
+let frame = sim.step_async().await?;
+```
+
 Runnable end-to-end examples live in [`examples/`](./examples/) — one per module:
 
 ```sh
@@ -140,6 +153,7 @@ cargo run --example acoustic_trap      # Gor'kov forces on a droplet
 - [x] Phase 2 — Fluid module
 - [x] Phase 3 — Acoustic module
 - [x] Phase 4 — Integration, polish, `v0.1.0` release
+- [x] `v0.2.0` — `step_async()` for WASM (WebGPU) support
 
 ## Contributing
 

@@ -145,16 +145,6 @@ cargo run --example acoustic_trap      # Gor'kov forces on a droplet
 | Fluid | 512×512 – 2048×2048 grid | ≥ 60 FPS |
 | Acoustic | 64³ – 256³ volume | ≥ 60 FPS |
 
-## Roadmap
-
-- [x] Design — architecture docs, ADRs, contract & invariants
-- [x] Phase 0 — Foundations (`GpuContext`, error types, build pipeline)
-- [x] Phase 1 — Granular module
-- [x] Phase 2 — Fluid module
-- [x] Phase 3 — Acoustic module
-- [x] Phase 4 — Integration, polish, `v0.1.0` release
-- [x] `v0.2.0` — `step_async()` for WASM (WebGPU) support
-
 ## Contributing
 
 Contributions are welcome — see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for setup and conventions.

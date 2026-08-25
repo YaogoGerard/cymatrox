@@ -42,8 +42,8 @@
         </div>
       </div>
       <div class="hero-figure">
-        <canvas id="chladni-hero" width="480" height="480" aria-label="Motif de Chladni généré en direct"></canvas>
-        <p class="figure-caption mono">n=<span id="hero-n">3</span>, m=<span id="hero-m">5</span> — plaque carrée idéalisée</p>
+        <canvas id="hero-canvas" width="480" height="480" aria-label="Champ de hauteur η réel calculé par le crate cymatrox"></canvas>
+        <p class="figure-caption mono">η(x,y) — bol de Faraday, données réelles du crate</p>
       </div>
     </div>
   </section>
@@ -96,7 +96,11 @@
     <div class="wrap">
       <p class="section-label mono">simulateur</p>
       <h2>Paramètre, observe, exporte</h2>
-      <p class="lede" id="wasm-status">Vérification du module WASM…</p>
+      <p class="lede" id="data-status">Chargement des données…</p>
+      <div class="data-row" id="live-controls" hidden>
+        <span class="control-value mono" id="live-note"></span>
+        <span class="data-banner is-busy mono" id="live-busy" hidden>recalcul GPU…</span>
+      </div>
 
       <div class="module-tabs" role="tablist" aria-label="Module physique">
         <button class="tab-btn is-active" data-module="granular" role="tab">Granular</button>

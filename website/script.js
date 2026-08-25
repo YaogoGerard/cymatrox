@@ -1,78 +1,128 @@
 /* =================================================================
-   HERO — always a JS Chladni approximation (decorative showcase,
-   not the simulator). See simulator section below for the real
-   cymatrox integration.
+   CYMATROX SITE — pure replay of REAL crate exports.
+   Every pixel shown here comes from website/data/*.json[.gz],
+   produced by `cargo run --release --example export_frames`
+   against the published cymatrox API. No physics lives in this
+   page: no WASM stepping, no JS approximation, no fallback demo.
    ================================================================= */
 
-function chladni(x, y, n, m) {
-  return Math.cos(n * Math.PI * x) * Math.cos(m * Math.PI * y)
-       - Math.cos(m * Math.PI * x) * Math.cos(n * Math.PI * y);
-}
+const MODULES = ["granular", "fluid", "acoustic"];
+const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
 
-function drawChladni2D(canvas, n, m, accentHex) {
-  const ctx = canvas.getContext("2d");
-  const w = canvas.width, h = canvas.height;
-  const img = ctx.createImageData(w, h);
-  const accent = hexToRgb(accentHex);
-  const bg = hexToRgb("#0e1e37");
-
-  for (let py = 0; py < h; py++) {
-    const y = (py / h) * 2 - 1;
-    for (let px = 0; px < w; px++) {
-      const x = (px / w) * 2 - 1;
-      const v = Math.abs(chladni(x, y, n, m));
-      const t = Math.max(0, 1 - v * 3.2);
-      const idx = (py * w + px) * 4;
-      img.data[idx] = lerp(bg.r, accent.r, t);
-      img.data[idx + 1] = lerp(bg.g, accent.g, t);
-      img.data[idx + 2] = lerp(bg.b, accent.b, t);
-      img.data[idx + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-}
+/* ---------- shared helpers ---------- */
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hexToRgb(hex) {
   const v = parseInt(hex.replace("#", ""), 16);
   return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
 }
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
-(function heroLoop() {
-  const canvas = document.getElementById("chladni-hero");
+async function decodeBody(buf, isGz) {
+  if (!isGz) return new TextDecoder().decode(buf);
+  if (!("DecompressionStream" in window)) throw new Error("DecompressionStream unavailable");
+  const ds = new DecompressionStream("gzip");
+  const stream = new Blob([buf]).stream().pipeThrough(ds);
+  return await new Response(stream).text();
+}
+
+async function loadDataset(name) {
+  for (const url of [`data/${name}.json.gz`, `data/${name}.json`]) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const text = await decodeBody(await res.arrayBuffer(), url.endsWith(".gz"));
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.frames && parsed.frames.length) return parsed;
+    } catch (e) { /* try next source */ }
+  }
+  return null;
+}
+
+async function loadAllDatasets() {
+  const results = await Promise.all(MODULES.map(loadDataset));
+  const data = {};
+  MODULES.forEach((m, i) => { data[m] = results[i]; });
+  return data;
+}
+
+function hasReal(data, m) { return !!(data && data[m] && data[m].frames.length); }
+
+function currentFrameOf(dataset, idx) {
+  if (!(dataset.frames[idx] instanceof Float32Array)) {
+    dataset.frames[idx] = Float32Array.from(dataset.frames[idx]);
+  }
+  return dataset.frames[idx];
+}
+
+function heatmapCanvas(values, gridW, accentHex) {
+  const rows = Math.floor(values.length / gridW);
+  const img = new ImageData(gridW, rows);
+  const accent = hexToRgb(accentHex);
+  const bg = hexToRgb("#0e1e37");
+  let min = Infinity, max = -Infinity;
+  for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
+  const range = Math.max(max - min, 1e-9);
+  for (let i = 0; i < values.length; i++) {
+    const t = (values[i] - min) / range;
+    img.data[i * 4]     = lerp(bg.r, accent.r, t);
+    img.data[i * 4 + 1] = lerp(bg.g, accent.g, t);
+    img.data[i * 4 + 2] = lerp(bg.b, accent.b, t);
+    img.data[i * 4 + 3] = 255;
+  }
+  const tmp = document.createElement("canvas");
+  tmp.width = gridW; tmp.height = rows;
+  tmp.getContext("2d").putImageData(img, 0, 0);
+  return tmp;
+}
+
+function midZSlice(frame, meta) {
+  const plane = meta.out_x * meta.out_y;
+  const zMid = meta.out_z >> 1;
+  return frame.subarray(zMid * plane, (zMid + 1) * plane);
+}
+
+/* =================================================================
+   HERO — animates the REAL fluid height field exported by cymatrox
+   (Faraday waves, 60 Hz). Same data file as the simulator panel.
+   ================================================================= */
+(async function hero() {
+  const canvas = document.getElementById("hero-canvas");
   if (!canvas) return;
-  const modes = [[3, 5], [2, 3], [4, 7], [1, 6], [5, 6], [3, 4]];
+  const ctx = canvas.getContext("2d");
+
+  const fluid = await loadDataset("fluid");
+  if (!fluid) {
+    ctx.fillStyle = "#0e1e37";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+
   let i = 0;
-  function tick() {
-    const [n, m] = modes[i % modes.length];
-    drawChladni2D(canvas, n, m, "#4fd1c5");
-    document.getElementById("hero-n").textContent = n;
-    document.getElementById("hero-m").textContent = m;
+  function draw() {
+    const f = currentFrameOf(fluid, i % fluid.frames.length);
+    const tmp = heatmapCanvas(f, fluid.meta.out_x, "#4fd1c5");
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
     i++;
   }
-  tick();
+  draw();
   if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    setInterval(tick, 3200);
+    setInterval(draw, 1000 / 8);
   }
 })();
 
 /* =================================================================
-   SIMULATOR — priority order:
-     1. real exported frames  (website/data/*.json[.gz], produced by
-        `cargo run --release --example export_frames` against the
-        published crate — no physics lives in this page)
-     2. live WASM bridge      (wasm-wrapper/, experimental)
-     3. JS Chladni fallback   (clearly labelled demo mode)
+   SIMULATOR PANEL — replay controls over real exported frames,
+   in 2D (canvas) and 3D (Three.js views built from the same data).
    ================================================================= */
-
-const MODULES = ["granular", "fluid", "acoustic"];
-const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
-
 (async function simulator() {
   const canvas = document.getElementById("sim-canvas");
   if (!canvas) return;
 
-  const statusEl = document.getElementById("wasm-status");
+  const statusEl = document.getElementById("data-status");
   const freqInput = document.getElementById("freq");
   const nInput = document.getElementById("mode-n");
   const mInput = document.getElementById("mode-m");
@@ -86,76 +136,127 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
   const frameLabel = document.getElementById("data-frame");
   const dataControls = document.getElementById("data-controls");
   const fileInput = document.getElementById("data-file");
+  const liveControls = document.getElementById("live-controls");
+  const liveBusyEl = document.getElementById("live-busy");
+  const liveNote = document.getElementById("live-note");
 
-  let wasm = null;
-  let wasmReady = false;
+  let DATA = null;
+  let liveServer = false;
   let currentModule = "granular";
   let view = "2d";
   let three = null;
-  const started = { granular: false, fluid: false, acoustic: false };
-
-  // ---- real-data layer -------------------------------------------------
-  const DATA = { granular: null, fluid: null, acoustic: null }; // {meta, frames}
   let playing = true;
   let frameIdx = 0;
   let lastTs = 0;
   const FRAME_MS = 1000 / 24;
 
-  function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  }
-
-  async function decodeBody(buf, isGz) {
-    if (!isGz) return new TextDecoder().decode(buf);
-    if (!("DecompressionStream" in window)) throw new Error("DecompressionStream unavailable");
-    const ds = new DecompressionStream("gzip");
-    const stream = new Blob([buf]).stream().pipeThrough(ds);
-    return await new Response(stream).text();
-  }
-
-  async function loadDataset(name) {
-    for (const url of [`data/${name}.json.gz`, `data/${name}.json`]) {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) continue;
-        const text = await decodeBody(await res.arrayBuffer(), url.endsWith(".gz"));
-        const parsed = JSON.parse(text);
-        if (parsed && parsed.frames && parsed.frames.length) return parsed;
-      } catch (e) { /* try next source */ }
-    }
-    return null;
-  }
-
-  async function loadAllDatasets() {
-    const results = await Promise.all(MODULES.map(loadDataset));
-    MODULES.forEach((m, i) => { DATA[m] = results[i]; });
-    refreshStatus();
-    syncDataControls();
-    renderCurrentFrame();
-    if (three && three.ready()) pushFrameToThree();
-  }
-
-  function hasReal(m) { return !!(DATA[m] && DATA[m].frames.length); }
+  /* ---------- status ---------- */
 
   function refreshStatus() {
-    const loaded = MODULES.filter(hasReal);
-    if (loaded.length === MODULES.length) {
+    const loaded = MODULES.filter((m) => hasReal(DATA, m));
+    if (liveServer) {
       statusEl.innerHTML =
-        'Données réelles du crate <span class="wasm-banner is-live">export v0.1.0 — lecture locale</span>' +
+        'Serveur cymatrox local <span class="data-banner is-live">connecté — résultats réels à la demande</span>' +
+        `<br><span style="font-size:12px">Bougez les curseurs : chaque changement relance un vrai calcul · datasets embarqués : ${MODULES.map((m) => `${m}: ${DATA && DATA[m] ? DATA[m].frames.length : 0} frames`).join(" · ")}</span>`;
+    } else if (loaded.length === MODULES.length) {
+      statusEl.innerHTML =
+        'Données réelles du crate <span class="data-banner is-live">export v0.1.0 — lecture locale</span>' +
         `<br><span style="font-size:12px">${MODULES.map((m) => `${m}: ${DATA[m].frames.length} frames`).join(" · ")} — régénérables via <code class="mono">cargo run --example export_frames</code></span>`;
     } else if (loaded.length) {
       statusEl.innerHTML =
-        `Données réelles partielles (${escapeHtml(loaded.join(", "))}) <span class="wasm-banner is-live">lecture locale</span>`;
-    } else if (!wasmReady) {
+        `Données réelles partielles (${escapeHtml(loaded.join(", "))}) <span class="data-banner is-live">lecture locale</span>`;
+    } else {
       statusEl.innerHTML =
-        'Mode démo — approximation JS, pas le vrai calcul ' +
-        '<span class="wasm-banner is-fallback">aucune donnée ni WASM</span>' +
-        `<br><span style="font-size:12px">Génère les données : <code class="mono">cargo run --example export_frames</code> puis serve le dossier en HTTP et recharge — ou charge les fichiers ci-dessous.</span>`;
+        'Aucune donnée chargée ' +
+        '<span class="data-banner is-missing">lecture impossible</span>' +
+        `<br><span style="font-size:12px">Ce site n'affiche que des sorties réelles du crate : génère les frames avec <code class="mono">cargo run --example export_frames</code>, ou démarre le serveur live <code class="mono">tools/cymatrox-live</code>, puis recharge.</span>`;
     }
   }
 
+  /* ---------- live server (real on-demand GPU results) ---------- */
+
+  async function probeLiveServer() {
+    try {
+      const res = await fetch("/api/ping", { cache: "no-store" });
+      if (!res.ok) return;
+      const info = await res.json();
+      if (!info.ok || info.crate !== "cymatrox") return;
+      liveServer = true;
+      liveControls.hidden = false;
+      liveNote.textContent =
+        `cymatrox v${info.version} — tout changement de curseur ou d'onglet relance un vrai calcul GPU`;
+      refreshStatus();
+      scheduleLiveRun(0); // compute the current module right away
+    } catch { /* no local server — replay-only mode */ }
+  }
+
+  function liveQuery() {
+    const p = new URLSearchParams();
+    const v = currentValues();
+    p.set("f", String(v.freq));
+    if (currentModule === "granular") {
+      p.set("n", String(v.n));
+      p.set("m", String(v.m));
+    } else {
+      p.set("grid", String(v.grid));
+    }
+    return p.toString();
+  }
+
+  let liveBusy = false;
+  let liveAbort = null;
+  let liveSeq = 0;
+  let liveTimer = null;
+  const LIVE_DEBOUNCE_MS = 450;
+
+  function setLiveBusy(on) {
+    liveBusy = on;
+    if (liveBusyEl) liveBusyEl.hidden = !on;
+  }
+
+  function scheduleLiveRun(delay = LIVE_DEBOUNCE_MS) {
+    if (!liveServer) return;
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(runLiveNow, delay);
+  }
+
+  async function runLiveNow() {
+    if (!liveServer) return;
+    const seq = ++liveSeq;
+    if (liveAbort) liveAbort.abort(); // supersede any in-flight compute
+    const ctrl = new AbortController();
+    liveAbort = ctrl;
+    setLiveBusy(true);
+    try {
+      const res = await fetch(`/api/${currentModule}?${liveQuery()}`, {
+        cache: "no-store",
+        signal: ctrl.signal,
+      });
+      const payload = await res.json();
+      if (!res.ok || payload.error) throw new Error(payload.detail || payload.error || res.status);
+      if (seq !== liveSeq) return; // a newer request already took over
+      if (!DATA) DATA = {};
+      DATA[currentModule] = payload;
+      frameIdx = 0;
+      playing = true;
+      playBtn.textContent = "Pause";
+      refreshStatus();
+      syncDataControls();
+      renderCurrentFrame();
+      pushFrameToThree();
+    } catch (err) {
+      if ((err && err.name === "AbortError") || seq !== liveSeq) return;
+      statusEl.innerHTML =
+        `<span class="data-banner is-missing">Calcul échoué — ${escapeHtml(String(err))}</span>`;
+    } finally {
+      if (seq === liveSeq) setLiveBusy(false); // only the latest run owns the indicator
+    }
+  }
+
+  /* ---------- playback ---------- */
+
   function syncDataControls() {
-    const on = hasReal(currentModule);
+    const on = hasReal(DATA, currentModule);
     dataControls.style.display = on ? "" : "none";
     if (!on) return;
     const total = DATA[currentModule].frames.length;
@@ -166,7 +267,7 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
   }
 
   function updateFrameLabel() {
-    const total = hasReal(currentModule) ? DATA[currentModule].frames.length : 0;
+    const total = hasReal(DATA, currentModule) ? DATA[currentModule].frames.length : 0;
     frameLabel.textContent = `${frameIdx + 1} / ${total}`;
   }
 
@@ -183,31 +284,93 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
     pushFrameToThree();
   });
 
-  // ---- WASM bridge attempt (experimental; see wasm-wrapper/BUILD.md) ---
-  try {
-    const mod = await import("./pkg/cymatrox_web.js");
-    await mod.default();      // wasm-bindgen web-target init
-    await mod.init_gpu();     // GpuContext::new() — needs WebGPU
-    wasm = mod;
-    wasmReady = true;
-    if (!MODULES.some(hasReal)) {
-      statusEl.innerHTML =
-        'Piloté par le vrai crate <span class="wasm-banner is-live">WASM actif — cymatrox v0.1.0</span>';
+  // Offline convenience: load exported .json/.json.gz manually (file:// usage).
+  fileInput.addEventListener("change", async () => {
+    if (!DATA) DATA = {};
+    for (const file of fileInput.files) {
+      const name = MODULES.find((m) => file.name.startsWith(m));
+      if (!name) continue;
+      try {
+        const text = await decodeBody(await file.arrayBuffer(), file.name.endsWith(".gz"));
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.frames && parsed.frames.length) DATA[name] = parsed;
+      } catch (e) { console.warn(`invalid dataset file ${file.name}:`, e); }
     }
-  } catch (err) {
-    wasmReady = false;
-    console.warn("cymatrox WASM not available:", err);
+    refreshStatus();
+    syncDataControls();
+    renderCurrentFrame();
+    if (three && three.ready()) pushFrameToThree();
+  });
+
+  /* ---------- rendering (2D) ---------- */
+
+  function renderNoData() {
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#0e1e37";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#8aa2c0";
+    ctx.font = "16px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(`aucune donnée réelle pour « ${currentModule} »`, canvas.width / 2, canvas.height / 2 - 12);
+    ctx.font = "13px monospace";
+    ctx.fillText("cargo run --example export_frames", canvas.width / 2, canvas.height / 2 + 16);
   }
 
-  loadAllDatasets();
-
-  // ---- UI plumbing ------------------------------------------------------
-  function showControlsFor(moduleName) {
-    document.querySelectorAll("[data-module-only]").forEach((el) => {
-      const allowed = el.dataset.moduleOnly.split(" ");
-      el.style.display = allowed.includes(moduleName) ? "" : "none";
-    });
+  function renderGranularFrame(flatXY, side = 0.5) {
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#0e1e37";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#4fd1c5";
+    const half = side / 2;
+    for (let i = 0; i < flatXY.length; i += 2) {
+      const px = ((flatXY[i] + half) / (2 * half)) * canvas.width;
+      const py = ((flatXY[i + 1] + half) / (2 * half)) * canvas.height;
+      ctx.fillRect(px, py, 1.4, 1.4);
+    }
   }
+
+  function renderHeightmapFrame(values, gridW, accentHex) {
+    const ctx = canvas.getContext("2d");
+    const tmp = heatmapCanvas(values, gridW, accentHex);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
+  }
+
+  function renderCurrentFrame() {
+    if (!hasReal(DATA, currentModule)) { renderNoData(); return; }
+    const f = currentFrameOf(DATA[currentModule], frameIdx);
+    const meta = DATA[currentModule].meta;
+    if (currentModule === "granular") {
+      renderGranularFrame(f, meta.side || 0.5);
+    } else if (currentModule === "fluid") {
+      renderHeightmapFrame(f, meta.out_x, ACCENTS.fluid);
+    } else {
+      renderHeightmapFrame(midZSlice(f, meta), meta.out_x, ACCENTS.acoustic);
+    }
+  }
+
+  function pushFrameToThree() {
+    if (!three || !three.ready() || view !== "3d") return;
+    if (!hasReal(DATA, currentModule)) return;
+    three.update(currentModule, currentFrameOf(DATA[currentModule], frameIdx), DATA[currentModule].meta);
+  }
+
+  /* ---------- main loop ---------- */
+
+  function tick(ts) {
+    requestAnimationFrame(tick);
+    const dtms = ts - lastTs;
+    lastTs = ts;
+    if (!hasReal(DATA, currentModule) || !playing || dtms < FRAME_MS - 2) return;
+    frameIdx = (frameIdx + 1) % DATA[currentModule].frames.length;
+    slider.value = String(frameIdx);
+    updateFrameLabel();
+    renderCurrentFrame();
+    pushFrameToThree();
+  }
+  requestAnimationFrame(tick);
+
+  /* ---------- config snippet (copy-paste into your own code) ---------- */
 
   function currentValues() {
     return {
@@ -235,157 +398,21 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
     }
   }
 
-  function restartActiveModule() {
-    if (hasReal(currentModule)) { syncDataControls(); renderCurrentFrame(); pushFrameToThree(); return; }
-    if (!wasmReady) { fallbackRender(); return; }
-    const { freq, n, m, grid } = currentValues();
-    try {
-      if (currentModule === "granular") {
-        wasm.granular_start(20000, 0.5, freq, m, n, 42n);
-        started.granular = true;
-      } else if (currentModule === "fluid") {
-        wasm.fluid_start(grid, grid, 0.2, 0.2, freq, true, 0.09, 42n);
-        started.fluid = true;
-      } else if (currentModule === "acoustic") {
-        wasm.acoustic_start(grid, grid, grid, 0.1, freq, 42n);
-        started.acoustic = true;
-      }
-    } catch (err) {
-      console.error(`Failed to start ${currentModule}:`, err);
-      statusEl.innerHTML =
-        `<span class="wasm-banner is-fallback">Erreur au démarrage de ${currentModule} — ${escapeHtml(String(err))}</span>`;
-    }
-  }
+  /* ---------- wiring ---------- */
 
-  // ---- 2D rendering -----------------------------------------------------
-  function renderGranularFrame(flatXY, side = 0.5) {
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#0e1e37";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#4fd1c5";
-    const half = side / 2;
-    for (let i = 0; i < flatXY.length; i += 2) {
-      const px = ((flatXY[i] + half) / (2 * half)) * canvas.width;
-      const py = ((flatXY[i + 1] + half) / (2 * half)) * canvas.height;
-      ctx.fillRect(px, py, 1.4, 1.4);
-    }
-  }
-
-  function heatmapToCtx(values, gridW, accentHex) {
-    const rows = Math.floor(values.length / gridW);
-    const img = new ImageData(gridW, rows);
-    const accent = hexToRgb(accentHex);
-    const bg = hexToRgb("#0e1e37");
-    let min = Infinity, max = -Infinity;
-    for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
-    const range = Math.max(max - min, 1e-9);
-    for (let i = 0; i < values.length; i++) {
-      const t = (values[i] - min) / range;
-      img.data[i * 4]     = lerp(bg.r, accent.r, t);
-      img.data[i * 4 + 1] = lerp(bg.g, accent.g, t);
-      img.data[i * 4 + 2] = lerp(bg.b, accent.b, t);
-      img.data[i * 4 + 3] = 255;
-    }
-    const tmp = document.createElement("canvas");
-    tmp.width = gridW; tmp.height = rows;
-    tmp.getContext("2d").putImageData(img, 0, 0);
-    return tmp;
-  }
-
-  function renderHeightmapFrame(values, gridW, accentHex) {
-    const ctx = canvas.getContext("2d");
-    const tmp = heatmapToCtx(values, gridW, accentHex);
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-  }
-
-  function midZSlice(frame, meta) {
-    const plane = meta.out_x * meta.out_y;
-    const zMid = meta.out_z >> 1;
-    return frame.subarray(zMid * plane, (zMid + 1) * plane);
-  }
-
-  function currentFrame() {
-    if (!hasReal(currentModule)) return null;
-    const d = DATA[currentModule];
-    if (!(d.frames[frameIdx] instanceof Float32Array)) {
-      d.frames[frameIdx] = Float32Array.from(d.frames[frameIdx]);
-    }
-    return d.frames[frameIdx];
-  }
-
-  function renderCurrentFrame() {
-    const f = currentFrame();
-    if (!f) { fallbackRender(); return; }
-    const meta = DATA[currentModule].meta;
-    if (currentModule === "granular") {
-      renderGranularFrame(f, meta.side || 0.5);
-    } else if (currentModule === "fluid") {
-      renderHeightmapFrame(f, meta.out_x, ACCENTS.fluid);
-    } else {
-      renderHeightmapFrame(midZSlice(f, meta), meta.out_x, ACCENTS.acoustic);
-    }
-  }
-
-  function pushFrameToThree() {
-    if (!three || !three.ready() || view !== "3d") return;
-    const f = currentFrame();
-    if (f) three.update(currentModule, f, DATA[currentModule].meta);
-    else {
-      const { n, m } = currentValues();
-      three.update(null, null, null, n, m);
-    }
-  }
-
-  function fallbackRender() {
-    const { n, m } = currentValues();
-    drawChladni2D(canvas, n, m, "#4fd1c5");
-  }
-
-  // ---- main loop ---------------------------------------------------------
-  function tick(ts) {
-    requestAnimationFrame(tick);
-    const dtms = ts - lastTs;
-    lastTs = ts;
-
-    if (hasReal(currentModule)) {
-      if (playing && dtms >= FRAME_MS - 2) {
-        frameIdx = (frameIdx + 1) % DATA[currentModule].frames.length;
-        slider.value = String(frameIdx);
-        updateFrameLabel();
-        renderCurrentFrame();
-        pushFrameToThree();
-      }
-      return;
-    }
-
-    // No real data → WASM live mode (2D only), otherwise nothing to do.
-    if (!wasmReady || view === "3d") return;
-    try {
-      if (currentModule === "granular" && started.granular) {
-        renderGranularFrame(Float32Array.from(wasm.granular_step()));
-      } else if (currentModule === "fluid" && started.fluid) {
-        const { grid } = currentValues();
-        renderHeightmapFrame(Float32Array.from(wasm.fluid_step()), grid, ACCENTS.fluid);
-      } else if (currentModule === "acoustic" && started.acoustic) {
-        const { grid } = currentValues();
-        const full = Float32Array.from(wasm.acoustic_step());
-        const zMid = grid >> 1;
-        renderHeightmapFrame(full.subarray(zMid * grid * grid, (zMid + 1) * grid * grid), grid, ACCENTS.acoustic);
-      }
-    } catch (err) {
-      console.error("step() failed:", err);
-    }
-  }
-  requestAnimationFrame(tick);
-
-  // ---- wiring ------------------------------------------------------------
   function onModuleChange(name) {
     currentModule = name;
     tabBtns.forEach((b) => b.classList.toggle("is-active", b.dataset.module === name));
-    showControlsFor(name);
+    document.querySelectorAll("[data-module-only]").forEach((el) => {
+      el.style.display = el.dataset.moduleOnly.split(" ").includes(name) ? "" : "none";
+    });
+    playing = true;
+    playBtn.textContent = "Pause";
+    syncDataControls();
     updateExportCode();
-    restartActiveModule();
+    renderCurrentFrame();
+    pushFrameToThree();
+    scheduleLiveRun(); // fresh real results for the newly selected module
   }
 
   tabBtns.forEach((btn) => btn.addEventListener("click", () => onModuleChange(btn.dataset.module)));
@@ -397,19 +424,7 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
       document.getElementById("mode-m-val").textContent = mInput.value;
       document.getElementById("grid-size-val").textContent = gridInput.value;
       updateExportCode();
-      if (hasReal(currentModule)) return; // sliders cannot replay recorded data
-      if (wasmReady) {
-        if (currentModule === "granular" && started.granular) {
-          try { wasm.granular_set_frequency(Number(freqInput.value)); } catch {}
-        } else {
-          restartActiveModule();
-        }
-      } else if (view !== "3d") {
-        fallbackRender();
-      } else if (three && three.ready()) {
-        const { n, m } = currentValues();
-        three.update(null, null, null, n, m);
-      }
+      scheduleLiveRun(); // debounced real recompute with the new parameters
     })
   );
 
@@ -427,6 +442,7 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
       btn.classList.add("is-active");
       view = btn.dataset.view;
       if (view === "3d") {
+        if (!hasReal(DATA, currentModule)) { renderNoData(); return; }
         canvas.style.display = "none";
         if (!three) three = initThree(canvas.parentElement);
         three.show();
@@ -439,28 +455,34 @@ const ACCENTS = { granular: "#4fd1c5", fluid: "#4fd1c5", acoustic: "#f2a65a" };
     });
   });
 
-  showControlsFor(currentModule);
+  /* ---------- boot ---------- */
+
+  refreshStatus();
   updateExportCode();
-  restartActiveModule();
+
+  DATA = await loadAllDatasets();
+  refreshStatus();
+  syncDataControls();
+  renderCurrentFrame();
+  probeLiveServer();
 })();
 
 /* =================================================================
-   3D VIEW — driven by REAL exported frames when available:
+   3D VIEW — built strictly from REAL exported frames:
      granular → THREE.Points cloud on the plate
      fluid    → displaced vertex-coloured mesh (η height field)
      acoustic → CanvasTexture plane of the mid-z pressure slice
-   Falls back to the decorative JS Chladni surface otherwise.
-   Objects are built lazily per module and reused across frames.
+   Objects are created lazily per module and reused across frames.
    ================================================================= */
 function initThree(container) {
   const script = document.createElement("script");
   const state = { ready: false };
-  let renderer, scene;
-  let decoMesh = null;                       // JS-chladni decoration
+  let renderer, scene, camera;
   let pointsObj = null, fieldMesh = null, texPlane = null;
 
   script.src = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
   script.onload = () => setup();
+  script.onerror = () => console.warn("three.js CDN unreachable — 3D view disabled");
   document.head.appendChild(script);
 
   function setup() {
@@ -479,19 +501,9 @@ function initThree(container) {
     renderer.domElement.style.aspectRatio = "1";
     container.appendChild(renderer.domElement);
 
-    const geo = new THREE.PlaneGeometry(1.4, 1.4, 80, 80);
-    geo.rotateX(-Math.PI / 2);
-    decoMesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshBasicMaterial({ color: 0x4fd1c5, wireframe: true })
-    );
-    scene.add(decoMesh);
-
     state.ready = true;
     animate();
   }
-
-  let cameraRef = null; // eslint-disable-line no-unused-vars
 
   function ensurePoints(count) {
     const THREE = window.THREE;
@@ -598,17 +610,6 @@ function initThree(container) {
     m.material.map.needsUpdate = true;
   }
 
-  function deformDeco(n, m) {
-    if (!decoMesh) return;
-    const pos = decoMesh.geometry.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i) / 0.7;
-      const y = pos.getZ(i) / 0.7;
-      pos.setY(i, chladni(x, y, n, m) * 0.12);
-    }
-    pos.needsUpdate = true;
-  }
-
   function animate() {
     requestAnimationFrame(animate);
     if (scene) {
@@ -619,15 +620,11 @@ function initThree(container) {
 
   return {
     ready: () => state.ready,
-    /* mod/frame/meta = real dataset; n/m = chladni fallback numbers */
-    update(mod, frame, meta, nFallback = 3, mFallback = 5) {
-      if (!state.ready) return;
-      const real = mod && frame && meta;
-      setVisible(pointsObj, real && mod === "granular");
-      setVisible(fieldMesh, real && mod === "fluid");
-      setVisible(texPlane, real && mod === "acoustic");
-      setVisible(decoMesh, !real);
-      if (!real) { deformDeco(nFallback, mFallback); return; }
+    update(mod, frame, meta) {
+      if (!state.ready || !mod || !frame || !meta) return;
+      setVisible(pointsObj, mod === "granular");
+      setVisible(fieldMesh, mod === "fluid");
+      setVisible(texPlane, mod === "acoustic");
       if (mod === "granular") updatePoints(frame, meta);
       else if (mod === "fluid") updateFluidMesh(frame, meta);
       else {

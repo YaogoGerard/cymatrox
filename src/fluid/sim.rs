@@ -463,7 +463,7 @@ mod tests {
         let cfg = reference_config(42);
         let ctx = crate::GpuContext::new().await.expect("gpu context");
 
-        let mut sim_sync = FluidSimulation::new(&ctx, cfg.clone()).expect("sync sim");
+        let mut sim_sync = FluidSimulation::new(&ctx, cfg).expect("sync sim");
         let mut sim_async = FluidSimulation::new(&ctx, cfg).expect("async sim");
 
         let frame_sync = sim_sync.step().expect("step sync");

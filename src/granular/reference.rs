@@ -5,6 +5,12 @@
 //! of the release build's runtime path. Mirrors `granular.wgsl` exactly,
 //! including wall-bounce edge cases. Layout/physics changes must be applied
 //! to both files in the same commit.
+//!
+//! This oracle is intentionally not part of the runtime path; it exists as a
+//! validation aid and may legitimately contain helper methods that are only
+//! exercised in golden-file tests.
+
+#![allow(dead_code)]
 
 use super::config::{GranularConfig, ResolvedMode};
 use super::placement::place_grains;

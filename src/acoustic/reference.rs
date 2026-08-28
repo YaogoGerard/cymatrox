@@ -6,6 +6,12 @@
 //! deliberately matches the shader — same ghost-cell handling, same
 //! stencil traversal, same EMA update — so drift stays within the
 //! contract tolerance instead of compounding through reordering.
+//!
+//! This oracle is intentionally not part of the runtime path; it exists as a
+//! validation aid and may legitimately contain helper methods that are only
+//! exercised in golden-file tests.
+
+#![allow(dead_code)]
 
 use crate::acoustic::config::{AcousticConfig, Axis, Side};
 
